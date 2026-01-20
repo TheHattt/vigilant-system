@@ -1,17 +1,15 @@
 <x-layouts::auth>
     <div class="flex flex-col gap-6">
-        <x-auth-header :title="__('Create an account')" :description="__('Enter your details below to create your account')" />
+        <x-auth-header :title="__('Create an account')" :description="__('Register your ISP company and setup your admin account.')" />
 
-        <!-- Session Status -->
         <x-auth-session-status class="text-center" :status="session('status')" />
 
         <form method="POST" action="{{ route('register.store') }}" class="flex flex-col gap-6">
             @csrf
 
-            <!-- Name -->
             <flux:input
                 name="name"
-                :label="__('Name')"
+                :label="__('Admin Name')"
                 :value="old('name')"
                 type="text"
                 required
@@ -20,7 +18,37 @@
                 :placeholder="__('Full name')"
             />
 
-            <!-- Email Address -->
+            <flux:input
+                name="company_name"
+                :label="__('ISP Company Name')"
+                :value="old('company_name')"
+                type="text"
+                required
+                :placeholder="__('e.g. Fast Net')"
+            />
+
+            <div class="grid grid-cols-2 gap-4">
+                <flux:input
+                    name="prefix"
+                    :label="__('Account Prefix')"
+                    :value="old('prefix')"
+                    type="text"
+                    required
+                    maxlength="3"
+                    :placeholder="__('FNE')"
+                />
+
+                <flux:input
+                    name="slug"
+                    :label="__('System Slug')"
+                    :value="old('slug')"
+                    type="text"
+                    readonly
+                    variant="filled"
+                    :placeholder="__('auto-generated')"
+                />
+            </div>
+
             <flux:input
                 name="email"
                 :label="__('Email address')"
@@ -31,7 +59,6 @@
                 placeholder="email@example.com"
             />
 
-            <!-- Password -->
             <flux:input
                 name="password"
                 :label="__('Password')"
@@ -42,7 +69,6 @@
                 viewable
             />
 
-            <!-- Confirm Password -->
             <flux:input
                 name="password_confirmation"
                 :label="__('Confirm password')"

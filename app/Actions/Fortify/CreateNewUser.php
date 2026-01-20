@@ -29,11 +29,11 @@ class CreateNewUser implements CreatesNewUsers
             ],
             "password" => ["required", "string", "min:8", "confirmed"],
             "company_name" => ["required", "string", "max:80"],
-            "prefix" => [
+            "account_prefix" => [
                 "nullable",
                 "string",
                 "max:10",
-                "unique:tenants,prefix",
+                "unique:tenants,account_prefix",
             ],
         ])->validate();
 
@@ -42,7 +42,8 @@ class CreateNewUser implements CreatesNewUsers
             $tenant = Tenant::create([
                 "name" => $input["company_name"],
                 "slug" => Str::slug($input["company_name"]),
-                "prefix" => $input["prefix"] ?? strtoupper(Str::random(3)),
+                "account_prefix" =>
+                    $input["account_prefix"] ?? strtoupper(Str::random(3)),
             ]);
 
             // 3. Create the User linked to Tenant
