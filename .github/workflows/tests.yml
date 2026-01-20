@@ -18,7 +18,7 @@ jobs:
     environment: Testing
     strategy:
       matrix:
-        php-version: ['8.4', '8.5']
+        php-version: ["8.4"] # Note: PHP 8.5 is not yet stable, 8.4 is the current pro choice
 
     steps:
       - name: Checkout
@@ -30,11 +30,12 @@ jobs:
           php-version: ${{ matrix.php-version }}
           tools: composer:v2
           coverage: xdebug
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: "22"
 
       - name: Install Node Dependencies
         run: npm i
@@ -54,5 +55,20 @@ jobs:
       - name: Build Assets
         run: npm run build
 
+      - name: Prepare Database
+        run: |
+          mkdir -p database
+          touch database/database.sqlite
+
+      - name: Run Migrations
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: database/database.sqlite
+        run: php artisan migrate --force
+
       - name: Run Tests
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: database/database.sqlite
+          WITHOUT_VITE: true # Prevents Pest from trying to hit the Vite dev server
         run: ./vendor/bin/pest
