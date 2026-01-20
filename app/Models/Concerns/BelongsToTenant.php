@@ -2,8 +2,8 @@
 
 namespace App\Models\Concerns;
 
-use Spatie\Multitenancy\Models\Tenant;
 use Illuminate\Database\Eloquent\Builder;
+use Spatie\Multitenancy\Models\Tenant;
 
 trait BelongsToTenant
 {
@@ -15,9 +15,9 @@ trait BelongsToTenant
             }
         });
 
-        static::addGlobalScope("tenant", function (Builder $builder) {
+        static::addGlobalScope('tenant', function (Builder $builder) {
             if (Tenant::checkCurrent()) {
-                $builder->where("tenant_id", Tenant::current()->id);
+                $builder->where('tenant_id', Tenant::current()->id);
             }
         });
     }

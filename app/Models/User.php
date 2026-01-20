@@ -13,7 +13,7 @@ use Spatie\Permission\Traits\HasRoles;
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable, TwoFactorAuthenticatable, HasRoles;
+    use HasFactory, HasRoles, Notifiable, TwoFactorAuthenticatable;
 
     /**
      * The attributes that are mass assignable.
@@ -21,11 +21,11 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $fillable = [
-        "name",
-        "email",
-        "password",
-        "tenant_id",
-        "is_super_admin",
+        'name',
+        'email',
+        'password',
+        'tenant_id',
+        'is_super_admin',
     ];
 
     /**
@@ -34,10 +34,10 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $hidden = [
-        "password",
-        "two_factor_secret",
-        "two_factor_recovery_codes",
-        "remember_token",
+        'password',
+        'two_factor_secret',
+        'two_factor_recovery_codes',
+        'remember_token',
     ];
 
     public function getStoredPermissionId(): int|string
@@ -53,8 +53,8 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            "email_verified_at" => "datetime",
-            "password" => "hashed",
+            'email_verified_at' => 'datetime',
+            'password' => 'hashed',
         ];
     }
 
@@ -64,9 +64,9 @@ class User extends Authenticatable
     public function initials(): string
     {
         return Str::of($this->name)
-            ->explode(" ")
+            ->explode(' ')
             ->take(2)
-            ->map(fn($word) => Str::substr($word, 0, 1))
-            ->implode("");
+            ->map(fn ($word) => Str::substr($word, 0, 1))
+            ->implode('');
     }
 }

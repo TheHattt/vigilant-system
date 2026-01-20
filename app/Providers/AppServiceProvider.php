@@ -5,9 +5,9 @@ namespace App\Providers;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
-use Illuminate\Support\Facades\Gate;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -26,7 +26,7 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->configureDefaults();
 
-        Gate::define("tenant", function ($user) {
+        Gate::define('tenant', function ($user) {
             return $user->is_super_admin ? true : null;
         });
     }
@@ -38,7 +38,7 @@ class AppServiceProvider extends ServiceProvider
         DB::prohibitDestructiveCommands(app()->isProduction());
 
         Password::defaults(
-            fn(): ?Password => app()->isProduction()
+            fn (): ?Password => app()->isProduction()
                 ? Password::min(12)
                     ->mixedCase()
                     ->letters()

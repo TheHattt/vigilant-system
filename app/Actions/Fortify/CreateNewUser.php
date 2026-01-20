@@ -2,11 +2,11 @@
 
 namespace App\Actions\Fortify;
 
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Hash;
 use App\Models\Tenant;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Hash; // Add this!
-use Illuminate\Support\Facades\Validator; // Add this!
 use Illuminate\Support\Str;
 use Laravel\Fortify\Contracts\CreatesNewUsers;
 
@@ -32,7 +32,7 @@ class CreateNewUser implements CreatesNewUsers
             "account_prefix" => [
                 "nullable",
                 "string",
-                "max:10",
+                "max:30",
                 "unique:tenants,account_prefix",
             ],
         ])->validate();
@@ -42,8 +42,7 @@ class CreateNewUser implements CreatesNewUsers
             $tenant = Tenant::create([
                 "name" => $input["company_name"],
                 "slug" => Str::slug($input["company_name"]),
-                "account_prefix" =>
-                    $input["account_prefix"] ?? strtoupper(Str::random(3)),
+                "account_prefix" => strtoupper($input["account_prefix"]),
             ]);
 
             // 3. Create the User linked to Tenant
