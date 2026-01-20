@@ -9,6 +9,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 use Spatie\Permission\Traits\HasRoles;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class User extends Authenticatable
 {
@@ -21,11 +22,11 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $fillable = [
-        'name',
-        'email',
-        'password',
-        'tenant_id',
-        'is_super_admin',
+        "name",
+        "email",
+        "password",
+        "tenant_id",
+        "is_super_admin",
     ];
 
     /**
@@ -34,10 +35,10 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $hidden = [
-        'password',
-        'two_factor_secret',
-        'two_factor_recovery_codes',
-        'remember_token',
+        "password",
+        "two_factor_secret",
+        "two_factor_recovery_codes",
+        "remember_token",
     ];
 
     public function getStoredPermissionId(): int|string
@@ -53,8 +54,8 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
+            "email_verified_at" => "datetime",
+            "password" => "hashed",
         ];
     }
 
@@ -64,9 +65,14 @@ class User extends Authenticatable
     public function initials(): string
     {
         return Str::of($this->name)
-            ->explode(' ')
+            ->explode(" ")
             ->take(2)
-            ->map(fn ($word) => Str::substr($word, 0, 1))
-            ->implode('');
+            ->map(fn($word) => Str::substr($word, 0, 1))
+            ->implode("");
+    }
+
+    public function tenant(): BelongsTo
+    {
+        return $this->belongsTo(Tenant::class);
     }
 }
