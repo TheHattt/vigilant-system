@@ -44,3 +44,5 @@ Data privacy is handled at the Model layer using the `BelongsToTenant` trait.
    ```bash
    git clone [https://github.com/your-username/mide.git](https://github.com/your-username/mide.git)
    cd mide
+   composer install
+   npm instal
