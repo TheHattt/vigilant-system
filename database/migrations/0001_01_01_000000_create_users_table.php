@@ -17,6 +17,8 @@ return new class extends Migration {
                 ->nullable()
                 ->constrained()
                 ->cascadeOnDelete();
+            $table->string("name");
+            $table->boolean("is_super_admin")->default(false);
             $table->string("email")->unique();
             $table->timestamp("email_verified_at")->nullable();
             $table->string("password");
