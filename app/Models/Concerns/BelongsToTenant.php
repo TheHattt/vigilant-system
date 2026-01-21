@@ -2,23 +2,39 @@
 
 namespace App\Models\Concerns;
 
+use App\Models\Tenant;
 use Illuminate\Database\Eloquent\Builder;
-use Spatie\Multitenancy\Models\Tenant;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 trait BelongsToTenant
 {
-    public static function bootBelongsToTenant()
+    /**
+     * Boot the trait: Apply automatic scoping and ID assignment.
+     */
+    public static function bootBelongsToTenant(): void
     {
-        static::creating(function ($model) {
-            if (empty($model->tenant_id) && Tenant::current()->id) {
-                $model->tenant_id = auth()->user()->tenant_id;
-            }
-        });
+        // Auto-assign tenant_id during model creation
+        static::creating(
+            fn($model) => auth()->check() && empty($model->tenant_id)
+                ? ($model->tenant_id = auth()->user()->tenant_id)
+                : null,
+        );
 
-        static::addGlobalScope('tenant', function (Builder $builder) {
-            if (Tenant::checkCurrent()) {
-                $builder->where('tenant_id', Tenant::current()->id);
-            }
-        });
+        // Apply global filter to restrict data by tenant_id
+        static::addGlobalScope(
+            "tenant",
+            fn(Builder $builder) => auth()->check() &&
+            !auth()->user()->is_super_admin
+                ? $builder->where("tenant_id", auth()->user()->tenant_id)
+                : null,
+        );
+    }
+
+    /**
+     * Relationship: The model belongs to a Tenant (ISP Branch).
+     */
+    public function tenant(): BelongsTo
+    {
+        return $this->belongsTo(Tenant::class);
     }
 }
