@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Validation\Rules\Password;
 use Illuminate\Support\Facades\RateLimiter;
-use Illuminate\Http\Request; // Changed from Facade to Type-hint for the closure
+use Illuminate\Http\Request;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Validation\ValidationException;
 
@@ -30,29 +30,38 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->configureDefaults();
 
-        Gate::define("tenant", function ($user) {
-            return $user->is_super_admin ? true : null;
-        });
+        Gate::define(
+            "tenant",
+            fn($user) => $user->is_super_admin ? true : null,
+        );
 
-        // Instant lookup protection
-        RateLimiter::for("tenant-lookup", function (Request $request) {
-            return [
-                Limit::perMinutes(2, 5)->by($request->ip()),
-                Limit::perMinutes(2, 3)->by(
+        /**
+         * Instant lookup protection
+         * Throttles the real-time prefix detection API.
+         * Limited to 4 attempts to prevent bulk email "fishing" while allowing for typos.
+         */
+        RateLimiter::for(
+            "tenant-lookup",
+            fn(Request $request) => [
+                Limit::perMinutes(2, 4)->by($request->ip()),
+                Limit::perMinutes(2, 4)->by(
                     strtolower($request->route("email") ?? $request->ip()),
                 ),
-            ];
-        });
+            ],
+        );
 
-        //
-        // Fortify Login protection - Prevents the ugly 429 page
+        /**
+         * Fortify Login protection - The "Sticky" Bouncer
+         * Set to 3 attempts to align with the "3 Strikes" UI.
+         */
         RateLimiter::for("login", function (Request $request) {
-            $email = (string) $request->email;
+            $email = strtolower((string) $request->email);
+            $key = "auth_lockout_" . $email . $request->ip();
 
-            return Limit::perMinute(5)
-                ->by($email . $request->ip())
+            return Limit::perMinute(3)
+                ->by($key)
                 ->response(function (Request $request, array $headers) {
-                    $seconds = $headers["Retry-After"] ?? 60;
+                    $seconds = $headers["Retry-After"] ?? 30;
 
                     throw ValidationException::withMessages([
                         "email" => [
@@ -61,6 +70,14 @@ class AppServiceProvider extends ServiceProvider
                     ]);
                 });
         });
+
+        /**
+         * Password Reset protection
+         */
+        RateLimiter::for(
+            "password.reset",
+            fn(Request $request) => Limit::perMinute(3)->by($request->ip()),
+        );
     }
 
     protected function configureDefaults(): void
