@@ -13,7 +13,6 @@ Route::view("dashboard", "dashboard")
 
 /**
  * Auth & Tenant Routes
- */
 Route::get(
     "/auth/tenant-lookup/{email}",
     TenantLookupController::class,
