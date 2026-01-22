@@ -13,6 +13,7 @@ use Illuminate\Support\Str;
 use Laravel\Fortify\Fortify;
 use App\Models\User;
 use App\Models\Tenant;
+use App\Http\Response\LoginResponse;
 
 class FortifyServiceProvider extends ServiceProvider
 {
@@ -21,9 +22,11 @@ class FortifyServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(
+            \Laravel\Fortify\Contracts\LoginResponse::class,
+            LoginResponse::class,
+        );
     }
-
     /**
      * Bootstrap any application services.
      */
@@ -33,23 +36,53 @@ class FortifyServiceProvider extends ServiceProvider
         $this->configureViews();
         $this->configureRateLimiting();
 
-        // Authenticate user
+        /**
+         * Custom Authentication Logic
+         * Handles both Global Super Admins and Scoped Tenant/ISP Users.
+         */
         Fortify::authenticateUsing(function (Request $request) {
-            // find tenant first
-            $tenant = Tenant::where(
-                "account_prefix",
-                $request->account_prefix,
-            )->first();
+            $email = $request->email;
+            $password = $request->password;
+            $prefix = $request->account_prefix;
 
-            // see if user exists in tenant's table
-            if ($tenant) {
-                $user = User::where("email", $request->email)
-                    ->where("tenant_id", $tenant->id)
-                    ->first();
-                if ($user && Hash::check($request->password, $user->password)) {
+            // 1. Initial User Lookup
+            $user = User::where("email", $email)->first();
+
+            if (!$user) {
+                return null;
+            }
+
+            // 2. Handle Super Admin Login (Platform Owner)
+            // Super Admins bypass tenant-specific scoping.
+            if ($user->is_super_admin) {
+                if (Hash::check($password, $user->password)) {
                     return $user;
                 }
             }
+
+            // 3. Handle Tenant/ISP User Login
+            // We find the tenant using the prefix/slug sent from the frontend.
+            if ($prefix) {
+                $tenant = Tenant::where("slug", $prefix)
+                    ->orWhere("account_prefix", $prefix)
+                    ->first();
+
+                if ($tenant) {
+                    // Re-verify the user belongs to THIS specific tenant.
+                    // This prevents cross-tenant credential stuffing.
+                    $tenantUser = User::where("email", $email)
+                        ->where("tenant_id", $tenant->id)
+                        ->first();
+
+                    if (
+                        $tenantUser &&
+                        Hash::check($password, $tenantUser->password)
+                    ) {
+                        return $tenantUser;
+                    }
+                }
+            }
+
             return null;
         });
     }

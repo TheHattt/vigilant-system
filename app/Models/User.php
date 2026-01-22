@@ -10,6 +10,8 @@ use Illuminate\Support\Str;
 use Laravel\Fortify\TwoFactorAuthenticatable;
 use Spatie\Permission\Traits\HasRoles;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use App\Models\Site;
+use App\Models\Tenant;
 
 class User extends Authenticatable
 {
@@ -74,5 +76,10 @@ class User extends Authenticatable
     public function tenant(): BelongsTo
     {
         return $this->belongsTo(Tenant::class);
+    }
+
+    public function site(): BelongsTo
+    {
+        return $this->belongsTo(Site::class, "tenant_id");
     }
 }
