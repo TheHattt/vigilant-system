@@ -1,44 +1,75 @@
 <?php
 
 namespace App\Services;
+
 use App\Models\Router;
 use RouterosAPI;
+use Exception;
+use Illuminate\Support\Collection;
 
 class MikrotikService
 {
     /**
-     *Attempt to connect to a Mikrotik router using the provided credentials.
-     *
-     * @param Router $router The router model instance.
-     * @param string $api_username The username for authentication.
-     * @param string $api_password The password for authentication.
-     * @return RouterosAPI|null The RouterosAPI instance if successful, null otherwise.
+     * Connect, verify, and provision Radius configuration on the MikroTik.
+     * * @param array $credentials Contains host, api_username, api_password, port, and radius_secret.
+     * @return bool
      */
-    public function verifyConnection(array $credentials): bool
+    public function verifyAndProvision(array $credentials): bool
     {
         $api = new RouterosAPI();
         $api->debug = false;
 
+        // 1. Initial Connection Attempt
         if (
-            $api->connect(
+            !$api->connect(
                 $credentials["host"],
                 $credentials["api_username"],
                 $credentials["api_password"],
                 $credentials["port"],
             )
         ) {
-            $api->disconnect();
-            return true;
+            return false;
         }
 
-        return false;
+        try {
+            // 2. Add Radius Client
+            // This allows the MikroTik to authenticate users against our server.
+            $api->comm("/radius/add", [
+                "service" => "ppp,hotspot",
+                "address" => config("radius.server_ip"), // Defined in config/radius.php
+                "secret" => $credentials["radius_secret"],
+                "comment" => "MANAGED_BY_AAA_SYSTEM",
+            ]);
+
+            // 3. Enable Radius Incoming (CoA)
+            // Essential for real-time speed changes and disconnects.
+            $api->comm("/radius/incoming/set", [
+                "accept" => "yes",
+                "port" => "3799",
+            ]);
+
+            // 4. Force API service to be enabled on the target port
+            $api->comm("/ip/service/set", [
+                ".id" => "api",
+                "disabled" => "no",
+                "port" => (string) $credentials["port"],
+            ]);
+
+            $api->disconnect();
+            return true;
+        } catch (Exception $e) {
+            // Log error here if needed: \Log::error($e->getMessage());
+            if ($api->connected) {
+                $api->disconnect();
+            }
+            return false;
+        }
     }
 
     /**
-     *Fetch IP pools from the router
-     **/
-
-    public function fetchPools(Router $router)
+     * Fetch IP pools from the router and format for our DB.
+     */
+    public function fetchPools(Router $router): Collection
     {
         $api = new RouterosAPI();
 
@@ -46,17 +77,17 @@ class MikrotikService
             $api->connect(
                 $router->host,
                 $router->api_username,
-                $router->api_password,
-                $router->port,
+                $router->api_password, // Decrypted via model cast
+                $router->api_port,
             )
         ) {
-            $pools = $api->comm("/ip/pool/print"); // IP Pools
-            $api->disconnect(); // Disconnect from the router
-            // Return the fetched pools as a collection of arrays
+            $pools = $api->comm("/ip/pool/print");
+            $api->disconnect();
+
             return collect($pools)->map(
                 fn($pool) => [
-                    ["name" => $pool["name"] ?? "Unknown"],
-                    ["range" => $pool["range"] ?? "Unknown"],
+                    "name" => $pool["name"] ?? "Unknown",
+                    "range" => $pool["ranges"] ?? "Unknown", // MikroTik uses 'ranges' (plural)
                 ],
             );
         }
