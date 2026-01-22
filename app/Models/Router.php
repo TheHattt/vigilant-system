@@ -10,19 +10,24 @@ class Router extends Model
         "tenant_id",
         "site_id",
         "name",
-        "horst",
+        "model",
+        "serial_number",
+        "hardware_name",
+        "host",
         "api_port",
         "api_username",
         "api_password",
         "radius_secret",
+        "radius_coa_port",
         "os_version",
+        "is_online",
     ];
-    /**
-     * Use Laravel's built-in encryption casting for passwords and secrets.
-     */
+
     protected $casts = [
         "api_password" => "encrypted",
         "radius_secret" => "encrypted",
+        "api_port" => "integer",
+        "radius_coa_port" => "integer",
         "is_online" => "boolean",
     ];
     public function site(): BelongsTo

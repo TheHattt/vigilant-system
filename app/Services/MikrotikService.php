@@ -10,8 +10,8 @@ class MikrotikService
      *Attempt to connect to a Mikrotik router using the provided credentials.
      *
      * @param Router $router The router model instance.
-     * @param string $username The username for authentication.
-     * @param string $password The password for authentication.
+     * @param string $api_username The username for authentication.
+     * @param string $api_password The password for authentication.
      * @return RouterosAPI|null The RouterosAPI instance if successful, null otherwise.
      */
     public function verifyConnection(array $credentials): bool

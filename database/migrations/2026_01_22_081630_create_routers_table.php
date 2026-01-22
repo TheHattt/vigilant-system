@@ -20,6 +20,11 @@ return new class extends Migration {
                 ->cascadeOnDelete();
             $table->foreignIdFor(Site::class)->constrained()->cascadeOnDelete();
 
+            // Identity & Hardware (The fields we need!)
+            $table->string("hardware_name");
+            $table->string("model")->nullable(); // e.g., CCR2004, RB5009, CHR
+            $table->string("serial_number")->nullable();
+
             //Management
             $table->string("name");
             $table->string("hostname");
