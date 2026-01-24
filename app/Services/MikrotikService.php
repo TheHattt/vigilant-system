@@ -3,95 +3,366 @@
 namespace App\Services;
 
 use App\Models\Router;
-use RouterosAPI;
-use Exception;
-use Illuminate\Support\Collection;
+use App\Models\PppSecret;
+use RouterOS\Client;
+use RouterOS\Query;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 
 class MikrotikService
 {
     /**
-     * Connect, verify, and provision Radius configuration on the MikroTik.
-     * * @param array $credentials Contains host, api_username, api_password, port, and radius_secret.
-     * @return bool
+     * Update an existing PPP Secret on the MikroTik router.
      */
-    public function verifyAndProvision(array $credentials): bool
-    {
-        $api = new RouterosAPI();
-        $api->debug = false;
-
-        // 1. Initial Connection Attempt
-        if (
-            !$api->connect(
-                $credentials["host"],
-                $credentials["api_username"],
-                $credentials["api_password"],
-                $credentials["port"],
-            )
-        ) {
-            return false;
+    public function updatePPPSecret(
+        Router $router,
+        PppSecret $secret,
+        array $data,
+    ): bool {
+        // Handle local environment mock
+        if (config("app.env") === "local" && empty($router->host)) {
+            Log::info("Mock Update PPP Secret: {$secret->name}");
+            return true;
         }
 
         try {
-            // 2. Add Radius Client
-            // This allows the MikroTik to authenticate users against our server.
-            $api->comm("/radius/add", [
-                "service" => "ppp,hotspot",
-                "address" => config("radius.server_ip"), // Defined in config/radius.php
-                "secret" => $credentials["radius_secret"],
-                "comment" => "MANAGED_BY_AAA_SYSTEM",
-            ]);
+            $client = $this->getClient($router);
 
-            // 3. Enable Radius Incoming (CoA)
-            // Essential for real-time speed changes and disconnects.
-            $api->comm("/radius/incoming/set", [
-                "accept" => "yes",
-                "port" => "3799",
-            ]);
+            // Construct the query using the Query builder
+            $query = new Query("/ppp/secret/set");
 
-            // 4. Force API service to be enabled on the target port
-            $api->comm("/ip/service/set", [
-                ".id" => "api",
-                "disabled" => "no",
-                "port" => (string) $credentials["port"],
-            ]);
+            // MikroTik needs a way to find the record. We use the 'name'.
+            $query->equal(".id", $secret->name);
 
-            $api->disconnect();
-            return true;
-        } catch (Exception $e) {
-            // Log error here if needed: \Log::error($e->getMessage());
-            if ($api->connected) {
-                $api->disconnect();
+            if (isset($data["name"])) {
+                $query->equal("name", $data["name"]);
             }
-            return false;
+            if (isset($data["password"])) {
+                $query->equal("password", $data["password"]);
+            }
+            if (isset($data["profile"])) {
+                $query->equal("profile", $data["profile"]);
+            }
+            if (isset($data["service"])) {
+                $query->equal("service", $data["service"]);
+            }
+            if (isset($data["comment"])) {
+                $query->equal("comment", $data["comment"]);
+            }
+
+            // Handle the 'disabled' field (MikroTik uses 'yes' for disabled)
+            if (isset($data["is_active"])) {
+                $query->equal("disabled", $data["is_active"] ? "no" : "yes");
+            }
+
+            $client->query($query)->read();
+
+            // Clear cache so the next fetch shows the updated data
+            Cache::forget("router.{$router->id}.ppp-secrets");
+            Cache::forget("ppp_stats_{$router->id}");
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error(
+                "Mikrotik Update Error [{$router->host}]: " . $e->getMessage(),
+            );
+            throw $e;
+        }
+    }
+    /**
+     * Removes a PPP Secret from the MikroTik hardware.
+     */
+    public function deletePPPSecret(Router $router, PppSecret $secret): bool
+    {
+        if (config("app.env") === "local" && empty($router->host)) {
+            return true;
+        }
+
+        try {
+            $client = $this->getClient($router);
+            // MikroTik removes by name or internal .id
+            $query = new Query("/ppp/secret/remove")->equal(
+                ".id",
+                $secret->name,
+            );
+            $client->query($query)->read();
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("MikroTik Delete Error: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    /**
+     * Fetches the MikroTik configuration export.
+     */
+    public function getExport(Router $router): string
+    {
+        if (config("app.env") === "local" && empty($router->host)) {
+            return $this->getMockData("export_string");
+        }
+
+        try {
+            $client = $this->getClient($router);
+
+            $output = "# Generated by Gemini Infrastructure Manager\n";
+            $output .= "# Router: " . $router->name . "\n";
+            $output .= "# Date: " . now()->toDateTimeString() . "\n";
+            $output .= "# Note: This is an API-generated partial export.\n\n";
+
+            // 1. System Identity
+            $identity = $client
+                ->query(new Query("/system/identity/print"))
+                ->read();
+            $output .=
+                "/system identity set name=" .
+                ($identity[0]["name"] ?? "MikroTik") .
+                "\n\n";
+
+            // 2. Interfaces
+            $output .= "/interface\n";
+            $interfaces = $client->query(new Query("/interface/print"))->read();
+            foreach ($interfaces as $iface) {
+                if (isset($iface["comment"])) {
+                    $output .=
+                        "set [ find name=" .
+                        $iface["name"] .
+                        " ] comment=\"" .
+                        $iface["comment"] .
+                        "\"\n";
+                }
+            }
+
+            // 3. IP Addresses
+            $output .= "\n/ip address\n";
+            $addresses = $client->query(new Query("/ip/address/print"))->read();
+            foreach ($addresses as $addr) {
+                if (($addr["dynamic"] ?? "false") === "false") {
+                    $output .=
+                        "add address=" .
+                        $addr["address"] .
+                        " interface=" .
+                        $addr["interface"] .
+                        " network=" .
+                        $addr["network"] .
+                        "\n";
+                }
+            }
+
+            return $output;
+        } catch (\Throwable $e) {
+            Log::error(
+                "Mikrotik Export Error [{$router->host}]: " . $e->getMessage(),
+            );
+            throw new \Exception(
+                "Could not connect to router API to generate export.",
+            );
         }
     }
 
     /**
-     * Fetch IP pools from the router and format for our DB.
+     * Optimized method to fetch PPP Secrets
      */
-    public function fetchPools(Router $router): Collection
+    public function getPPPSecrets(Router $router): array
     {
-        $api = new RouterosAPI();
+        return $this->getCachedData($router, "ppp-secrets", 10) ?? [];
+    }
 
-        if (
-            $api->connect(
-                $router->host,
-                $router->api_username,
-                $router->api_password, // Decrypted via model cast
-                $router->api_port,
-            )
+    public function getCachedData(
+        Router $router,
+        string $type,
+        int $seconds = 5,
+    ): ?array {
+        $cacheKey = "router.{$router->id}.{$type}";
+
+        return Cache::remember($cacheKey, $seconds, function () use (
+            $router,
+            $type,
         ) {
-            $pools = $api->comm("/ip/pool/print");
-            $api->disconnect();
+            if (config("app.env") === "local" && empty($router->host)) {
+                return $this->getMockData($type);
+            }
 
-            return collect($pools)->map(
-                fn($pool) => [
-                    "name" => $pool["name"] ?? "Unknown",
-                    "range" => $pool["ranges"] ?? "Unknown", // MikroTik uses 'ranges' (plural)
-                ],
-            );
+            try {
+                $client = $this->getClient($router);
+
+                return match ($type) {
+                    "resources" => $client
+                        ->query(new Query("/system/resource/print"))
+                        ->read()[0] ?? [],
+                    "interfaces" => $client
+                        ->query(new Query("/interface/print"))
+                        ->read() ?? [],
+                    "ppp-secrets" => $client
+                        ->query(new Query("/ppp/secret/print"))
+                        ->read() ?? [],
+                    "logs" => array_reverse(
+                        $client->query(new Query("/log/print"))->read() ?? [],
+                    ),
+                    default => null,
+                };
+            } catch (\Throwable $e) {
+                Log::error(
+                    "Mikrotik Service Error [{$router->host}] Type [{$type}]: " .
+                        $e->getMessage(),
+                );
+                return null;
+            }
+        });
+    }
+
+    public function setInterfaceStatus(
+        Router $router,
+        string $interfaceId,
+        bool $shouldDisable,
+    ): bool {
+        if (config("app.env") === "local") {
+            return true;
         }
 
-        return collect();
+        try {
+            $client = $this->getClient($router);
+            $client
+                ->query(
+                    new Query("/interface/set")
+                        ->equal(".id", $interfaceId)
+                        ->equal("disabled", $shouldDisable ? "yes" : "no"),
+                )
+                ->read();
+
+            Cache::forget("router.{$router->id}.interfaces");
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    public function reboot(Router $router): bool
+    {
+        if (config("app.env") === "local") {
+            return true;
+        }
+        try {
+            $this->getClient($router)
+                ->query(new Query("/system/reboot"))
+                ->read();
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    private function getClient(Router $router): Client
+    {
+        return new Client([
+            "host" => $router->hostname ?? $router->host,
+            "user" => $router->api_username,
+            "pass" => $router->api_password,
+            "port" => (int) $router->api_port,
+            "timeout" => 5,
+        ]);
+    }
+
+    private function getMockData(string $type)
+    {
+        return match ($type) {
+            "export_string"
+                => "# Mock Export\n/system identity set name=Mock-Router",
+            "resources" => [
+                "uptime" => "14d 02:34:11",
+                "cpu-load" => rand(8, 15),
+                "total-memory" => 4294967296,
+                "free-memory" => 2362232012,
+                "cpu-count" => 4,
+            ],
+            "interfaces" => [
+                [
+                    ".id" => "*1",
+                    "name" => "ether1",
+                    "running" => "true",
+                    "disabled" => "false",
+                    "type" => "ether",
+                ],
+            ],
+            "ppp-secrets" => [
+                [
+                    ".id" => "*1",
+                    "name" => "gemini_user",
+                    "password" => "secret123",
+                    "service" => "pppoe",
+                    "profile" => "10M_Profile",
+                    "last-logged-out" => "jan/24/2026 12:00:00",
+                    "disabled" => "false",
+                    "comment" => "Primary Uplink",
+                ],
+                [
+                    ".id" => "*2",
+                    "name" => "test_customer",
+                    "password" => "pass456",
+                    "service" => "pptp",
+                    "profile" => "default",
+                    "last-logged-out" => "never",
+                    "disabled" => "true",
+                    "comment" => "Suspended Account",
+                ],
+            ],
+            "logs" => [
+                [
+                    "time" => "jan/23 19:30:01",
+                    "topics" => "system,info",
+                    "message" => "interface enabled",
+                ],
+            ],
+            default => [],
+        };
+    }
+
+    public function getInterfaceTraffic(
+        Router $router,
+        string $interface,
+    ): array {
+        if (config("app.env") === "local") {
+            return [
+                "rx" => rand(500000, 2000000),
+                "tx" => rand(100000, 500000),
+            ];
+        }
+
+        try {
+            $client = $this->getClient($router);
+            $result = $client
+                ->query(
+                    new \RouterOS\Query("/interface/monitor-traffic")
+                        ->equal("interface", $interface)
+                        ->equal("once", ""),
+                )
+                ->read();
+
+            return [
+                "rx" => $result[0]["rx-bits-per-second"] ?? 0,
+                "tx" => $result[0]["tx-bits-per-second"] ?? 0,
+            ];
+        } catch (\Throwable $e) {
+            return ["rx" => 0, "tx" => 0];
+        }
+    }
+
+    public function connect($host, $user, $pass, $port): bool
+    {
+        if (config("app.env") === "local" && empty($host)) {
+            return true;
+        }
+        try {
+            new Client([
+                "host" => $host,
+                "user" => $user,
+                "pass" => $pass,
+                "port" => (int) $port,
+                "timeout" => 3,
+            ]);
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 }

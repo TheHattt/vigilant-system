@@ -48,8 +48,8 @@
                     const data = await response.json();
 
                     if (response.ok) {
-                        // High-speed redirect to dashboard
-                        window.location.href = data.redirect || '/dashboard';
+                        // High-speed redirect to onboarding (Updated to point to your new route)
+                        window.location.href = '{{ route('onboarding.mikrotik') }}';
                     } else {
                         // Capture Laravel Validation errors
                         this.errors = data.errors || {};
@@ -110,7 +110,7 @@
                 </div>
             </div>
 
-            {{-- Section 3: Security Policy (Layout Fix Applied) --}}
+            {{-- Section 3: Security Policy --}}
             <div class="space-y-4">
                 <div class="flex items-center gap-2 text-zinc-400">
                     <flux:icon.shield-check variant="micro" />
@@ -118,7 +118,6 @@
                 </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 p-5 bg-zinc-50 dark:bg-white/5 rounded-2xl border border-zinc-200 dark:border-zinc-800">
-                    {{-- Reserved space prevents inputs jumping when errors appear --}}
                     <div class="min-h-[100px] flex flex-col gap-1">
                         <flux:input x-model="password" name="password" :label="__('Master Password')" type="password" required viewable />
                         <p x-show="errors.password" x-text="errors.password[0]" class="text-[10px] text-rose-600 font-bold leading-tight"></p>

@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
@@ -29,6 +30,24 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->configureDefaults();
+
+        /**
+         * MikroTik Date Macro
+         * Handles "never" strings and MikroTik's specific date formatting (jan/24/2026).
+         */
+        Carbon::macro("mikrotikDiff", function ($date) {
+            if (!$date || $date === "never") {
+                return "Never";
+            }
+
+            try {
+                // Replace slashes with hyphens to ensure Carbon parses the date correctly
+                $normalized = str_replace("/", "-", $date);
+                return Carbon::parse($normalized)->diffForHumans();
+            } catch (\Exception $e) {
+                return "Invalid Date";
+            }
+        });
 
         Gate::define(
             "tenant",

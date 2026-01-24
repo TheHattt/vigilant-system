@@ -15,25 +15,32 @@
                     <flux:sidebar.item icon="home" :href="route('dashboard')" :current="request()->routeIs('dashboard')" wire:navigate>
                         {{ __('Dashboard') }}
                     </flux:sidebar.item>
+
+                    {{-- Dynamic Routers Item with Offline Badge --}}
+                    @php
+                        $offlineCount = \App\Models\Router::where('is_online', false)->count();
+                    @endphp
+
+                    <flux:sidebar.item icon="server" :href="route('router.index')" :current="request()->routeIs('router.index')" wire:navigate>
+                        {{ __('Routers') }}
+
+                        @if($offlineCount > 0)
+                            <x-slot name="badge">
+                                <span class="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-sm">
+                                    {{ $offlineCount }}
+                                </span>
+                            </x-slot>
+                        @endif
+                    </flux:sidebar.item>
+
                 </flux:sidebar.group>
             </flux:sidebar.nav>
 
             <flux:spacer />
 
-            <flux:sidebar.nav>
-                <flux:sidebar.item icon="folder-git-2" href="https://github.com/laravel/livewire-starter-kit" target="_blank">
-                    {{ __('Repository') }}
-                </flux:sidebar.item>
-
-                <flux:sidebar.item icon="book-open-text" href="https://laravel.com/docs/starter-kits#livewire" target="_blank">
-                    {{ __('Documentation') }}
-                </flux:sidebar.item>
-            </flux:sidebar.nav>
-
             <x-desktop-user-menu class="hidden lg:block" :name="auth()->user()->name" />
         </flux:sidebar>
 
-        <!-- Mobile User Menu -->
         <flux:header class="lg:hidden">
             <flux:sidebar.toggle class="lg:hidden" icon="bars-2" inset="left" />
 

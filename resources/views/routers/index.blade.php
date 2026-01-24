@@ -1,106 +1,111 @@
 <x-layouts::app>
-    <div class="min-h-screen bg-gray-50 dark:bg-[#0f1116] text-gray-900 dark:text-gray-100">
-        <header class="bg-white dark:bg-[#161b22] border-b border-gray-200 dark:border-gray-800 sticky top-0 z-30">
-            <div class="max-w-[90rem] mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+    <div x-data="{
+            displayMode: 'grid',
+            search: '',
+            isLoading: true
+         }"
+         x-init="setTimeout(() => isLoading = false, 1000)"
+         class="p-4 md:p-8 lg:p-12 bg-white dark:bg-zinc-800 min-h-screen rounded-lg">
+
+        {{-- Header Section --}}
+        <div class="mb-6 md:mb-10 flex flex-col sm:flex-row sm:items-center justify-between gap-6 pb-6 md:pb-10 border-b border-neutral-200 dark:border-zinc-800">
+            <div class="flex items-center gap-4 md:gap-5">
+                <div class="relative">
+                    <flux:avatar src="{{ auth()->user()->avatar_url }}" :initials="auth()->user()->initials()" size="lg" class="md:size-xl rounded-md border border-neutral-200 dark:border-zinc-700 shadow-sm" />
+                    <div class="absolute -bottom-1 -right-1 h-3 w-3 bg-emerald-500 rounded-md border-2 border-white dark:border-zinc-900 animate-pulse"></div>
+                </div>
                 <div>
-                    <div class="flex items-center gap-2">
-                        <div class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></div>
-                        <h2 class="font-black text-xl tracking-tight uppercase">Core Infrastructure</h2>
-                    </div>
-                    <p class="text-[11px] font-mono text-gray-500 dark:text-gray-400">Environment: Production // Nodes: {{ $routers->count() }}</p>
-                </div>
-
-                <div class="flex items-center gap-3">
-                    <div class="hidden lg:flex items-center bg-gray-100 dark:bg-gray-800 rounded-lg p-1 border dark:border-gray-700">
-                        <button class="px-3 py-1.5 text-xs font-bold rounded-md bg-white dark:bg-gray-700 shadow-sm">Grid</button>
-                        <button class="px-3 py-1.5 text-xs font-bold text-gray-500">List</button>
-                    </div>
-                    <a href="{{ route('onboarding.mikrotik') }}" class="flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg transition-all shadow-lg shadow-indigo-500/20 uppercase tracking-widest">
-                        <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-                        Provision Node
-                    </a>
-                </div>
-            </div>
-        </header>
-
-        <main class="max-w-[90rem] mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-                @php
-                    $stats = [
-                        ['label' => 'Uptime Avg', 'val' => '99.98%', 'color' => 'text-green-500'],
-                        ['label' => 'Total Bandwidth', 'val' => '4.2 Gbps', 'color' => 'text-blue-500'],
-                        ['label' => 'Active Leases', 'val' => '1,240', 'color' => 'text-indigo-500'],
-                        ['label' => 'Critical Alerts', 'val' => '0', 'color' => 'text-gray-500'],
-                    ];
-                @endphp
-                @foreach($stats as $stat)
-                    <div class="bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-800 p-4 rounded-xl">
-                        <span class="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{{ $stat['label'] }}</span>
-                        <p class="text-2xl font-mono font-bold {{ $stat['color'] }}">{{ $stat['val'] }}</p>
-                    </div>
-                @endforeach
-            </div>
-
-            <div class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-                @foreach($routers as $router)
-                <div class="bg-white dark:bg-[#161b22] border border-gray-200 dark:border-gray-800 rounded-2xl overflow-hidden hover:border-indigo-500/50 transition-all duration-300 group shadow-sm">
-                    <div class="p-5 border-b border-gray-100 dark:border-gray-800 flex justify-between items-start bg-gray-50/50 dark:bg-gray-800/20">
-                        <div class="flex items-center gap-3">
-                            <div class="relative">
-                                <div class="h-10 w-10 bg-indigo-600 rounded-lg flex items-center justify-center text-white shadow-inner">
-                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-                                </div>
-                                <div class="absolute -bottom-1 -right-1 h-3 w-3 rounded-full border-2 border-white dark:border-[#161b22] {{ $router->is_online ? 'bg-green-500' : 'bg-red-500' }}"></div>
-                            </div>
-                            <div>
-                                <h3 class="text-sm font-black dark:text-white uppercase tracking-tight">{{ $router->name }}</h3>
-                                <p class="text-[10px] font-mono text-gray-500 uppercase">{{ $router->model }} • {{ $router->hostname }}</p>
-                            </div>
-                        </div>
-                        <button class="text-gray-400 hover:text-white"><svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z"/></svg></button>
-                    </div>
-
-                    <div class="p-5">
-                        <div class="grid grid-cols-2 gap-4 mb-6">
-                            <div class="space-y-1">
-                                <span class="text-[9px] font-bold text-gray-400 uppercase">CPU Load</span>
-                                <div class="w-full bg-gray-200 dark:bg-gray-700 h-1.5 rounded-full overflow-hidden">
-                                    <div class="bg-green-500 h-full w-[12%]"></div>
-                                </div>
-                                <p class="text-[10px] font-mono text-gray-600 dark:text-gray-300">12% / 40°C</p>
-                            </div>
-                            <div class="space-y-1">
-                                <span class="text-[9px] font-bold text-gray-400 uppercase">Memory usage</span>
-                                <div class="w-full bg-gray-200 dark:bg-gray-700 h-1.5 rounded-full overflow-hidden">
-                                    <div class="bg-indigo-500 h-full w-[45%]"></div>
-                                </div>
-                                <p class="text-[10px] font-mono text-gray-600 dark:text-gray-300">114MB / 256MB</p>
-                            </div>
-                        </div>
-
-                        <div class="flex flex-wrap gap-2 mb-6">
-                            <div class="px-2 py-1 bg-gray-100 dark:bg-gray-800 border dark:border-gray-700 rounded text-[10px] font-bold text-gray-500 dark:text-gray-400">
-                                RADIUS: <span class="text-green-500">3799</span>
-                            </div>
-                            <div class="px-2 py-1 bg-gray-100 dark:bg-gray-800 border dark:border-gray-700 rounded text-[10px] font-bold text-gray-500 dark:text-gray-400">
-                                API: <span class="text-green-500">{{ $router->api_port }}</span>
-                            </div>
-                        </div>
-
-                        <div class="flex items-center justify-between pt-4 border-t border-gray-100 dark:border-gray-800">
-                            <div class="flex -space-x-1">
-                                <span class="h-6 w-6 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[8px] flex items-center justify-center font-bold text-indigo-500">P1</span>
-                                <span class="h-6 w-6 rounded-full bg-gray-500/10 border border-gray-500/20 text-[8px] flex items-center justify-center font-bold text-gray-500">+</span>
-                            </div>
-                            <a href="{{ route('router.show', $router->id) }}" class="inline-flex items-center text-[11px] font-black text-indigo-500 hover:text-indigo-400 uppercase tracking-widest transition-colors">
-                                Open Console
-                                <svg class="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 5l7 7-7 7"/></svg>
-                            </a>
-                        </div>
+                    <h1 class="text-xl md:text-2xl font-bold text-neutral-900 dark:text-neutral-50">
+                        {{ auth()->user()->name }}
+                    </h1>
+                    <div class="flex items-center gap-3 mt-1">
+                        <span class="text-[10px] md:text-xs font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-2 py-0.5 md:px-2.5 md:py-1 rounded-md border border-indigo-100 dark:border-indigo-500/20">System Administrator</span>
                     </div>
                 </div>
-                @endforeach
             </div>
-        </main>
+
+            <div class="flex items-center justify-between sm:justify-end gap-6 md:gap-10 border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-zinc-800 pt-4 sm:pt-0 sm:pl-10">
+                <div class="hidden md:block text-right">
+                    <p class="text-[10px] font-bold text-neutral-400 mb-2 uppercase tracking-wider">Cluster Health</p>
+                    <div class="flex items-end gap-1 h-4">
+                        @for($i=0; $i<8; $i++)
+                            <div class="w-1 rounded-sm bg-emerald-500 animate-[health-bounce_2s_infinite_ease-in-out]"
+                                 style="animation-delay: {{ $i * 150 }}ms; height: 30%;"></div>
+                        @endfor
+                        <span class="ml-2 text-sm font-bold text-neutral-900 dark:text-neutral-100">Optimal</span>
+                    </div>
+                </div>
+                <div class="text-left sm:text-right w-full sm:w-auto">
+                    <p class="text-[10px] font-bold text-neutral-400 mb-1 uppercase tracking-wider">System Time</p>
+                    <p class="text-base md:text-lg font-semibold text-neutral-900 dark:text-neutral-100 leading-none">
+                        {{ now()->format('H:i') }} <span class="text-xs text-neutral-500 font-normal">UTC</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        {{-- Controls --}}
+        <div class="flex flex-col space-y-4 md:flex-row md:space-y-0 justify-between items-center gap-4 mb-8">
+            <div class="flex flex-col sm:flex-row items-center gap-4 w-full md:w-auto">
+                <div class="relative w-full sm:w-64 md:w-80 group">
+                    <flux:icon.magnifying-glass variant="micro" class="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 group-focus-within:text-indigo-500 transition-colors" />
+                    <input x-model="search" type="text" placeholder="Filter nodes..."
+                        class="w-full bg-neutral-50 dark:bg-zinc-800/50 border border-neutral-200 dark:border-zinc-700 rounded-md py-2 pl-10 pr-4 text-sm font-medium text-neutral-800 dark:text-neutral-200 shadow-sm focus:border-indigo-500 outline-none transition-all">
+                </div>
+
+                <div class="hidden sm:flex p-1 bg-neutral-100 dark:bg-zinc-800 rounded-md border border-neutral-200 dark:border-zinc-700">
+                    <button @click="displayMode = 'grid'" :class="displayMode === 'grid' ? 'bg-white dark:bg-zinc-700 shadow-sm text-neutral-900 dark:text-white' : 'text-neutral-500'" class="px-3 py-1 text-xs font-bold rounded-lg transition-all">Grid</button>
+                    <button @click="displayMode = 'list'" :class="displayMode === 'list' ? 'bg-white dark:bg-zinc-700 shadow-sm text-neutral-900 dark:text-white' : 'text-neutral-500'" class="px-3 py-1 text-xs font-bold rounded-lg transition-all">List</button>
+                </div>
+            </div>
+
+            <a href="{{ route('onboarding.mikrotik') }}" class="w-full sm:w-auto flex justify-center items-center px-5 py-2.5 bg-neutral-900 dark:bg-white text-white dark:text-neutral-900 text-xs font-bold rounded-lg hover:opacity-90 transition-all shadow-md active:scale-95">
+                <flux:icon.plus variant="micro" class="mr-2"/>
+                Provision Node
+            </a>
+        </div>
+
+        {{-- Stats --}}
+        <x-infrastructure.stats :routers="$routers"/>
+
+        {{-- Main Content --}}
+        <div class="relative min-h-[400px] mt-8">
+            {{-- Skeletons --}}
+            <div x-show="isLoading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6">
+                @for($i=0; $i<8; $i++)
+                    <div class="h-44 rounded-2xl bg-zinc-800/50 border border-zinc-800 animate-pulse"></div>
+                @endfor
+            </div>
+
+            {{-- Router Cards --}}
+            <div x-show="!isLoading"
+                 x-cloak
+                 x-transition:enter="transition ease-out duration-500"
+                 :class="displayMode === 'grid' ? 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6' : 'flex flex-col gap-3'">
+
+                @forelse($routers as $router)
+                    <div x-show="'{{ strtolower($router->name) }}'.includes(search.toLowerCase())">
+                        <x-infrastructure.node-card :router="$router" />
+                    </div>
+                @empty
+                    <div class="col-span-full py-24 text-center border border-dashed border-zinc-800 rounded-2xl bg-zinc-900/50">
+                        <flux:icon.server variant="micro" class="mx-auto text-zinc-700 mb-4 h-12 w-12" />
+                        <h3 class="text-sm font-bold text-zinc-500">No Infrastructure Deployed</h3>
+                    </div>
+                @endforelse
+            </div>
+        </div>
+
+        <div class="mt-10">
+            <x-infrastructure.activity-log :routers="$routers" />
+        </div>
     </div>
+
+    <style>
+        [x-cloak] { display: none !important; }
+        @keyframes health-bounce {
+            0%, 100% { height: 30%; opacity: 0.3; }
+            50% { height: 100%; opacity: 1; }
+        }
+    </style>
 </x-layouts::app>
