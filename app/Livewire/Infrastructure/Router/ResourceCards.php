@@ -19,15 +19,27 @@ class ResourceCards extends Component
     public ?int $temperature = null;
     public string $lastSyncHash = "";
 
+    /**
+     * Listeners allow this component to update ONLY when
+     * the manual Sync button is pressed.
+     */
+    protected $listeners = [
+        "refreshResources" => "refreshData",
+        "tab-changed" => "refreshData",
+    ];
+
     public function mount(Router $router)
     {
         $this->router = $router;
         $this->refreshData();
     }
 
+    /**
+     * This method now only runs when called by mount()
+     * or triggered by the 'refreshResources' event.
+     */
     public function refreshData()
     {
-        // Stop polling if we are waiting for the router to come back up
         if ($this->isRebooting) {
             return;
         }
@@ -37,31 +49,36 @@ class ResourceCards extends Component
 
         if (!$data) {
             $this->hasData = false;
+            $this->isHealthy = false;
             return;
         }
 
         $currentHash = md5(json_encode($data));
         if ($currentHash === $this->lastSyncHash) {
+            $this->hasData = true;
             return;
         }
 
         $this->lastSyncHash = $currentHash;
         $this->hasData = true;
 
-        $this->uptime = $data["uptime"] ?? "Unknown";
+        // Map Mikrotik API keys to class properties
+        $this->uptime = $data["uptime"] ?? "00:00:00";
         $this->cpuLoad = (int) ($data["cpu-load"] ?? 0);
 
-        $totalMem = $data["total-memory"] ?? 1;
-        $freeMem = $data["free-memory"] ?? 0;
+        $totalMem = (int) ($data["total-memory"] ?? 1);
+        $freeMem = (int) ($data["free-memory"] ?? 0);
         $usedMem = $totalMem - $freeMem;
 
         $this->memory = [
-            "percentage" => round(($usedMem / $totalMem) * 100),
+            "percentage" => (int) round(($usedMem / $totalMem) * 100),
             "used" => round($usedMem / 1024 / 1024, 1),
             "total" => round($totalMem / 1024 / 1024, 1),
         ];
 
         $this->temperature = $data["board-temperature"] ?? null;
+
+        // Health thresholds
         $this->isHealthy =
             $this->cpuLoad < 90 && $this->memory["percentage"] < 95;
     }
@@ -71,17 +88,14 @@ class ResourceCards extends Component
         $this->isRebooting = true;
         $service->reboot($this->router);
 
-        // Close modal via JS dispatch
         $this->dispatch("modal-close", name: "reboot-confirmation");
 
-        session()->flash(
-            "status",
-            "Reboot command sent. Systems will be offline shortly.",
-        );
+        session()->flash("status", "Reboot command sent.");
     }
 
     public function render()
     {
+        // Removed the refreshData() call from here to stop auto-execution on every UI interaction.
         return view("livewire.infrastructure.router.resource-cards");
     }
 }

@@ -12,6 +12,16 @@ class ThroughputChart extends Component
     public $interface = "ether1";
     public $interfaces = [];
 
+    /**
+     * Listeners allow the chart to update ONLY when
+     * the manual Sync button is pressed.
+     */
+    protected $listeners = [
+        "refreshResources" => '$refresh',
+        "refreshInterfaces" => '$refresh',
+        "tab-changed" => '$refresh',
+    ];
+
     public function mount(Router $router)
     {
         $this->router = $router;
@@ -25,6 +35,10 @@ class ThroughputChart extends Component
             ->toArray();
     }
 
+    /**
+     * This method fetches the current traffic stats.
+     * It is called by the Blade view during rendering.
+     */
     public function getTraffic()
     {
         $service = app(MikrotikService::class);

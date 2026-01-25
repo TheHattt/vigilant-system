@@ -2,212 +2,248 @@
 
 namespace App\Livewire\Infrastructure\Router;
 
+use App\Models\Router;
+use App\Models\PppSecret;
+use App\Models\ActivityLog;
+use App\Services\MikrotikService;
+use App\Jobs\SyncRouterSecretsBatch;
 use Livewire\Component;
 use Livewire\WithPagination;
 use Livewire\Attributes\Computed;
-use App\Models\Router;
-use App\Models\PppSecret;
-use App\Services\MikrotikService;
-use Illuminate\Contracts\View\View;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Pagination\LengthAwarePaginator;
 
 class PppSecrets extends Component
 {
     use WithPagination;
 
+    // --- State Properties ---
     public Router $router;
-
-    // Filters
     public string $search = "";
-    public string $serviceFilter = "";
     public string $statusFilter = "";
+    public string $syncStatus = "idle";
+    public string $syncError = "";
 
-    // Selection
-    public array $selectedSecrets = [];
+    // Bulk Actions
+    public array $selected = [];
     public bool $selectAll = false;
 
-    // State
-    public string $syncStatus = "idle";
-    public ?string $syncError = null;
-
-    // Form fields
+    // Form Properties (Create/Edit)
+    public string $newName = "",
+        $newPassword = "",
+        $newService = "pppoe",
+        $newProfile = "default",
+        $newComment = "";
     public ?int $editingId = null;
-    public string $editName = "";
-    public string $editPassword = "";
-    public string $editProfile = "default";
-    public string $editService = "pppoe";
-    public string $editComment = "";
+    public string $editName = "",
+        $editPassword = "",
+        $editService = "pppoe",
+        $editProfile = "default",
+        $editComment = "";
 
-    protected $queryString = [
-        "search" => ["except" => ""],
-        "serviceFilter" => ["except" => ""],
-        "statusFilter" => ["except" => ""],
-    ];
+    // --- Caching for Stats ---
+    private ?array $cachedOnlineUsernames = null;
+    private ?array $cachedStats = null;
+    private int $cacheTimestamp = 0;
+    private const CACHE_DURATION = 30;
 
     public function mount(Router $router): void
     {
         $this->router = $router;
     }
 
-    public function updated($property): void
+    // --- Computed Properties (Fixes the $stats error) ---
+
+    #[Computed]
+    public function stats()
     {
-        if (in_array($property, ["search", "serviceFilter", "statusFilter"])) {
-            $this->resetPage();
-        }
-        if ($property === "selectAll") {
-            $this->handleSelectAll();
-        }
-    }
-
-    public function editSecret(int $id): void
-    {
-        $secret = PppSecret::findOrFail($id);
-        $this->editingId = $id;
-        $this->editName = $secret->name;
-        $this->editPassword = $secret->password ?? "";
-        $this->editProfile = $secret->profile;
-        $this->editService = $secret->service;
-        $this->editComment = $secret->comment ?? "";
-
-        $this->dispatch("modal-show", name: "edit-secret");
-    }
-
-    public function saveSecret(MikrotikService $mikrotikService): void
-    {
-        $this->validate([
-            "editName" => "required",
-            "editProfile" => "required",
-        ]);
-
-        try {
-            $secret = PppSecret::findOrFail($this->editingId);
-
-            DB::transaction(function () use ($mikrotikService, $secret) {
-                $mikrotikService->updatePPPSecret($this->router, $secret, [
-                    "name" => $this->editName,
-                    "password" => $this->editPassword,
-                    "profile" => $this->editProfile,
-                    "service" => $this->editService,
-                    "comment" => $this->editComment,
-                ]);
-
-                $secret->update([
-                    "name" => $this->editName,
-                    "password" => $this->editPassword,
-                    "profile" => $this->editProfile,
-                    "service" => $this->editService,
-                    "comment" => $this->editComment,
-                    "is_synced" => true,
-                ]);
-            });
-
-            $this->dispatch("modal-hide", name: "edit-secret");
-            $this->dispatch(
-                "notify",
-                type: "success",
-                message: "Secret updated.",
-            );
-            $this->clearCache();
-        } catch (\Exception $e) {
-            $this->dispatch("notify", type: "error", message: $e->getMessage());
-        }
-    }
-
-    public function syncNow(MikrotikService $mikrotikService): void
-    {
-        $this->syncStatus = "syncing";
-        try {
-            $mikrotikSecrets = $mikrotikService->getPPPSecrets($this->router);
-            PppSecret::syncFromMikroTik($this->router->id, $mikrotikSecrets);
-            $this->clearCache();
-            $this->syncStatus = "idle";
-            $this->dispatch(
-                "notify",
-                type: "success",
-                message: "Synced successfully.",
-            );
-        } catch (\Exception $e) {
-            $this->syncStatus = "error";
-            $this->syncError = $e->getMessage();
-        }
-    }
-
-    public function toggleActive(
-        int $secretId,
-        MikrotikService $mikrotikService,
-    ): void {
-        try {
-            $secret = PppSecret::findOrFail($secretId);
-            $newStatus = !$secret->is_active;
-            $mikrotikService->updatePPPSecret($this->router, $secret, [
-                "is_active" => $newStatus,
-            ]);
-            $secret->update(["is_active" => $newStatus, "is_synced" => true]);
-            $this->clearCache();
-        } catch (\Exception $e) {
-            $this->dispatch("notify", type: "error", message: $e->getMessage());
-        }
+        $baseQuery = PppSecret::where("router_id", $this->router->id);
+        return [
+            "total" => (clone $baseQuery)->count(),
+            "active" => (clone $baseQuery)->where("is_active", true)->count(),
+            "online" => count($this->onlineUsernames),
+            "needs_sync" => (clone $baseQuery)
+                ->where("is_synced", false)
+                ->count(),
+        ];
     }
 
     #[Computed]
-    public function secrets(): LengthAwarePaginator
+    public function onlineUsernames()
     {
-        $query = PppSecret::where("router_id", $this->router->id);
-        if ($this->search) {
-            $query->where("name", "like", "%{$this->search}%");
+        $breakerKey = "router.{$this->router->id}.unreachable";
+        if (Cache::has($breakerKey) || !$this->router->is_online) {
+            return [];
         }
-        return $query->orderByDesc("is_active")->paginate(20);
-    }
 
-    #[Computed]
-    public function stats(): array
-    {
         return Cache::remember(
-            "ppp_stats_{$this->router->id}",
+            "router.{$this->router->id}.active_list",
             30,
-            fn() => [
-                "total" => PppSecret::where(
-                    "router_id",
-                    $this->router->id,
-                )->count(),
-                "active" => PppSecret::where("router_id", $this->router->id)
-                    ->where("is_active", true)
-                    ->count(),
-                "online" => PppSecret::where("router_id", $this->router->id)
-                    ->where("last_connected_at", ">=", now()->subHours(24))
-                    ->count(),
-                "needs_sync" => PppSecret::where("router_id", $this->router->id)
-                    ->where("is_synced", false)
-                    ->count(),
-            ],
+            function () use ($breakerKey) {
+                try {
+                    $active = app(MikrotikService::class)->getActiveConnections(
+                        $this->router,
+                        silent: true,
+                    );
+                    return collect($active)->pluck("name")->toArray();
+                } catch (\Exception $e) {
+                    Cache::put($breakerKey, true, now()->addMinutes(5));
+                    return [];
+                }
+            },
         );
     }
 
-    public function render(): View
+    #[Computed]
+    public function secrets()
     {
-        return view("livewire.infrastructure.router.ppp-secrets", [
-            "lastSyncedAt" => PppSecret::where(
-                "router_id",
-                $this->router->id,
-            )->max("last_synced_at"),
+        return PppSecret::where("router_id", $this->router->id)
+            ->when(
+                $this->search,
+                fn($q) => $q->where(
+                    fn($sub) => $sub
+                        ->where("name", "like", "%{$this->search}%")
+                        ->orWhere("comment", "like", "%{$this->search}%"),
+                ),
+            )
+            ->when(
+                $this->statusFilter !== "",
+                fn($q) => $q->where(
+                    "is_active",
+                    $this->statusFilter === "active",
+                ),
+            )
+            ->latest()
+            ->paginate(15);
+    }
+
+    // --- CRUD Actions with Change Tracking ---
+
+    public function createSecret(): void
+    {
+        $this->validate([
+            "newName" => "required|min:2",
+            "newPassword" => "required|min:4",
         ]);
+
+        $secret = PppSecret::create([
+            "router_id" => $this->router->id,
+            "name" => $this->newName,
+            "password" => $this->newPassword,
+            "service" => $this->newService,
+            "profile" => $this->newProfile,
+            "comment" => $this->newComment,
+            "is_active" => true,
+            "is_synced" => false,
+        ]);
+
+        ActivityLog::create([
+            "router_id" => $this->router->id,
+            "user_id" => auth()->id(),
+            "action" => "create",
+            "description" => "Created PPP Secret: {$this->newName} (Profile: {$this->newProfile})",
+        ]);
+
+        $this->syncToHardware($secret);
+        $this->reset(["newName", "newPassword", "newComment"]);
+        $this->dispatch("modal-close", name: "create-secret");
     }
 
-    protected function handleSelectAll(): void
+    public function updateSecret(): void
     {
-        $this->selectedSecrets = $this->selectAll
-            ? collect($this->secrets->items())
-                ->pluck("id")
-                ->map(fn($id) => (string) $id)
-                ->toArray()
-            : [];
+        $secret = PppSecret::findOrFail($this->editingId);
+        $oldValues = $secret->only(["name", "profile", "comment"]);
+
+        $secret->update([
+            "name" => $this->editName,
+            "password" => $this->editPassword,
+            "service" => $this->editService,
+            "profile" => $this->editProfile,
+            "comment" => $this->editComment,
+            "is_synced" => false,
+        ]);
+
+        $changes = array_diff_assoc(
+            $secret->only(["name", "profile", "comment"]),
+            $oldValues,
+        );
+        $diffText = collect($changes)
+            ->map(fn($v, $k) => "$k to '$v'")
+            ->implode(", ");
+
+        ActivityLog::create([
+            "router_id" => $this->router->id,
+            "user_id" => auth()->id(),
+            "action" => "update",
+            "description" =>
+                "Updated {$secret->name}" . ($diffText ? " ($diffText)" : ""),
+            "changes" => json_encode(["from" => $oldValues, "to" => $changes]),
+        ]);
+
+        $this->syncToHardware($secret);
+        $this->dispatch("modal-close", name: "edit-secret");
     }
 
-    protected function clearCache(): void
+    public function toggleActive($id): void
     {
-        Cache::forget("ppp_stats_{$this->router->id}");
-        unset($this->stats, $this->secrets);
+        $secret = PppSecret::findOrFail($id);
+        $newStatus = !$secret->is_active;
+        $label = $newStatus ? "Enabled" : "Disabled";
+
+        $secret->update(["is_active" => $newStatus, "is_synced" => false]);
+
+        ActivityLog::create([
+            "router_id" => $this->router->id,
+            "user_id" => auth()->id(),
+            "action" => "toggle",
+            "description" => "{$label} PPP Secret: {$secret->name}",
+        ]);
+
+        $this->syncToHardware($secret, ["is_active" => $newStatus]);
+    }
+
+    public function deleteSecret($id = null): void
+    {
+        $secret = PppSecret::findOrFail($id ?? $this->editingId);
+        $name = $secret->name;
+
+        ActivityLog::create([
+            "router_id" => $this->router->id,
+            "user_id" => auth()->id(),
+            "action" => "delete",
+            "description" => "Deleted PPP Secret: {$name}",
+        ]);
+
+        try {
+            app(MikrotikService::class)->deletePPPSecret(
+                $this->router,
+                $secret,
+            );
+        } catch (\Exception $e) {
+        }
+
+        $secret->delete();
+        $this->dispatch("modal-close", name: "confirm-delete");
+    }
+
+    private function syncToHardware($secret, $data = null)
+    {
+        if ($this->router->is_online) {
+            try {
+                app(MikrotikService::class)->updatePPPSecret(
+                    $this->router,
+                    $secret,
+                    $data ?? $secret->toArray(),
+                );
+                $secret->update(["is_synced" => true]);
+            } catch (\Exception $e) {
+                Log::warning("Hardware sync delayed for {$secret->name}");
+            }
+        }
+    }
+
+    public function render()
+    {
+        return view("livewire.infrastructure.router.ppp-secrets");
     }
 }

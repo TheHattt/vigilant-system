@@ -14,7 +14,7 @@ new class extends Component {
     }
 }; ?>
 
-<div wire:poll.30s>
+<div >
     @if($count > 0)
         <span class="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full shadow-sm animate-pulse">
             {{ $count }}

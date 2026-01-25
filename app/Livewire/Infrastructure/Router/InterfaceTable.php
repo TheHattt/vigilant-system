@@ -10,88 +10,50 @@ class InterfaceTable extends Component
 {
     public Router $router;
     public array $interfaces = [];
-    public ?string $lastSync = null;
-    public string $lastSyncHash = "";
-
-    // Modal & Action State
-    public ?string $selectedInterfaceId = null;
-    public ?string $selectedInterfaceName = null;
-    public bool $isDisabling = false;
+    public array $speeds = []; // Stores ['ether1' => ['rx' => 1024, 'tx' => 512]]
 
     public function mount(Router $router)
     {
         $this->router = $router;
-        $this->loadData();
+        $this->refreshData();
     }
 
-    /**
-     * Polled refresh: Only updates state if hardware data has actually changed.
-     */
-    public function refreshData(MikrotikService $service)
-    {
-        $newData = $service->getCachedData($this->router, "interfaces");
-        if (!$newData) {
-            return;
-        }
-
-        $newDataHash = md5(json_encode($newData));
-
-        // If nothing changed on the router, don't trigger a Livewire re-render
-        if ($newDataHash === $this->lastSyncHash) {
-            return;
-        }
-
-        $this->interfaces = $newData;
-        $this->lastSyncHash = $newDataHash;
-        $this->lastSync = now()->format("H:i:s");
-    }
-
-    /**
-     * Manual/Force load from hardware.
-     */
-    public function loadData()
+    public function refreshData()
     {
         $service = app(MikrotikService::class);
+
+        // 1. Get General Stats (Status, Mac, Bytes)
         $this->interfaces =
             $service->getCachedData($this->router, "interfaces") ?? [];
-        $this->lastSyncHash = md5(json_encode($this->interfaces));
-        $this->lastSync = now()->format("H:i:s");
-    }
 
-    /**
-     * Prepares the modal state.
-     */
-    public function confirmToggle($id, $name, $currentDisabledStatus)
-    {
-        $this->selectedInterfaceId = $id;
-        $this->selectedInterfaceName = $name;
+        // 2. Get Live Traffic for each interface
+        // We iterate through interfaces and fetch live monitor-traffic data
+        foreach ($this->interfaces as $iface) {
+            $name = $iface["name"];
+            $traffic = $service->getInterfaceTraffic($this->router, $name);
 
-        // If disabled is 'false', we are about to disable it.
-        $this->isDisabling = $currentDisabledStatus === "false";
-
-        $this->dispatch("modal-show", name: "interface-toggle-modal");
-    }
-
-    /**
-     * Executes the MikroTik API command.
-     */
-    public function toggleInterface(MikrotikService $service)
-    {
-        $success = $service->setInterfaceStatus(
-            $this->router,
-            $this->selectedInterfaceId,
-            $this->isDisabling,
-        );
-
-        if ($success) {
-            $this->dispatch("modal-close", name: "interface-toggle-modal");
-
-            // Give the router a half-second to commit before we re-read
-            usleep(500000);
-            $this->loadData();
-        } else {
-            // Error handling could go here (e.g., Flux::toast)
+            if ($traffic) {
+                $this->speeds[$name] = [
+                    "rx" => $this->formatSpeed(
+                        $traffic["rx-bits-per-second"] ?? 0,
+                    ),
+                    "tx" => $this->formatSpeed(
+                        $traffic["tx-bits-per-second"] ?? 0,
+                    ),
+                ];
+            }
         }
+    }
+
+    private function formatSpeed($bps)
+    {
+        if ($bps >= 1000000) {
+            return round($bps / 1000000, 1) . " Mbps";
+        }
+        if ($bps >= 1000) {
+            return round($bps / 1000, 1) . " Kbps";
+        }
+        return $bps . " bps";
     }
 
     public function render()

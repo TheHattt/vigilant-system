@@ -1,4 +1,4 @@
-<div wire:poll.15s="checkConnection">
+<div>
     <div class="flex flex-col h-[550px] overflow-hidden rounded-xl  bg-zinc-950 shadow-2xl">
 
         {{-- Header --}}

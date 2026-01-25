@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Router;
 use App\Models\PppSecret;
+use App\Models\PppLiveSession;
 use RouterOS\Client;
 use RouterOS\Query;
 use Illuminate\Support\Facades\Log;
@@ -11,28 +12,238 @@ use Illuminate\Support\Facades\Cache;
 
 class MikrotikService
 {
+    private const CONNECTION_TIMEOUT = 3;
+    private const READ_TIMEOUT = 5;
+    private const CACHE_TTL_RESOURCES = 5;
+    private const CACHE_TTL_PPP_SECRETS = 10;
+    private const CACHE_TTL_INTERFACES = 30;
+    private const CIRCUIT_BREAKER_DURATION = 5;
+
     /**
-     * Update an existing PPP Secret on the MikroTik router.
+     * Get the configuration export from the MikroTik router.
      */
+    public function getExport(Router $router): string
+    {
+        try {
+            $client = $this->getClient($router);
+            $responses = $client->query("/export")->read();
+
+            // MikroTik export usually returns an array of lines or sections
+            if (is_array($responses)) {
+                return collect($responses)
+                    ->map(function ($item) {
+                        return $item[".section"] ??
+                            (is_string($item) ? $item : "");
+                    })
+                    ->implode("\n");
+            }
+
+            return (string) $responses;
+        } catch (\Throwable $e) {
+            Log::error(
+                "Export failed for router {$router->id}: " . $e->getMessage(),
+            );
+            throw $e;
+        }
+    }
+
+    /**
+     * Sync active sessions from MikroTik and store them in the local database.
+     */
+    public function syncLiveSessions(Router $router): void
+    {
+        if ($this->isCircuitBreakerActive($router->id)) {
+            return;
+        }
+
+        try {
+            $activeConnections = $this->getPPPActive($router);
+
+            // 1. Get IDs of secrets belonging to this router to match them
+            $secretIds = $router->pppSecrets()->pluck("id", "name")->toArray();
+
+            // 2. Prepare data for current active sessions
+            foreach ($activeConnections as $session) {
+                $name = $session["name"] ?? null;
+
+                if ($name && isset($secretIds[$name])) {
+                    PppLiveSession::updateOrCreate(
+                        ["ppp_secret_id" => $secretIds[$name]],
+                        [
+                            "name" => $name,
+                            "service" => $session["service"] ?? "pppoe",
+                            "caller_id" => $session["caller-id"] ?? null,
+                            "address" => $session["address"] ?? null,
+                            "uptime" => $session["uptime"] ?? null,
+                            "bytes_in" => (int) ($session["bytes-in"] ?? 0),
+                            "bytes_out" => (int) ($session["bytes-out"] ?? 0),
+                        ],
+                    );
+                }
+            }
+
+            // 3. Optional: Remove sessions from DB that are no longer active on Router
+            $activeNames = collect($activeConnections)
+                ->pluck("name")
+                ->toArray();
+            PppLiveSession::whereIn("ppp_secret_id", array_values($secretIds))
+                ->whereNotIn("name", $activeNames)
+                ->delete();
+        } catch (\Throwable $e) {
+            Log::error(
+                "Live session sync failed for router {$router->id}: " .
+                    $e->getMessage(),
+            );
+        }
+    }
+
+    public function getCachedData(
+        Router $router,
+        string $type,
+        int $seconds = 5,
+    ): ?array {
+        $breakerKey = "router.{$router->id}.unreachable";
+        if (Cache::has($breakerKey)) {
+            return null;
+        }
+
+        $cacheKey = "router.{$router->id}.{$type}";
+
+        return Cache::remember($cacheKey, $seconds, function () use (
+            $router,
+            $type,
+            $breakerKey,
+        ) {
+            try {
+                $client = $this->getClient($router);
+
+                $data = match ($type) {
+                    "ppp-secrets" => $client
+                        ->query("/ppp/secret/print")
+                        ->read() ?? [],
+                    "resources" => $client
+                        ->query("/system/resource/print")
+                        ->read()[0] ?? [],
+                    "interfaces" => $client
+                        ->query("/interface/print")
+                        ->read() ?? [],
+                    default => null,
+                };
+
+                return $data;
+            } catch (\Throwable $e) {
+                Cache::put(
+                    $breakerKey,
+                    true,
+                    now()->addMinutes(self::CIRCUIT_BREAKER_DURATION),
+                );
+                Log::warning(
+                    "Router {$router->id} unreachable. Circuit breaker active.",
+                    [
+                        "router_id" => $router->id,
+                        "router_name" => $router->name,
+                        "type" => $type,
+                        "error" => $e->getMessage(),
+                    ],
+                );
+                return null;
+            }
+        });
+    }
+
+    public function getPPPSecrets(Router $router): array
+    {
+        return $this->getCachedData(
+            $router,
+            "ppp-secrets",
+            self::CACHE_TTL_PPP_SECRETS,
+        ) ?? [];
+    }
+
+    public function getActiveConnections(
+        Router $router,
+        bool $silent = false,
+    ): array {
+        $breakerKey = "router.{$router->id}.unreachable";
+
+        if (Cache::has($breakerKey)) {
+            return [];
+        }
+
+        try {
+            $client = $this->getClient($router);
+            return $client->query("/ppp/active/print")->read() ?? [];
+        } catch (\Throwable $e) {
+            Cache::put(
+                $breakerKey,
+                true,
+                now()->addMinutes(self::CIRCUIT_BREAKER_DURATION),
+            );
+
+            if (!$silent) {
+                Log::warning(
+                    "Failed to get active connections for router {$router->id}",
+                    [
+                        "router_id" => $router->id,
+                        "error" => $e->getMessage(),
+                    ],
+                );
+            }
+
+            return [];
+        }
+    }
+
+    public function createPPPSecret(Router $router, array $data): array
+    {
+        $breakerKey = "router.{$router->id}.unreachable";
+
+        try {
+            $client = $this->getClient($router);
+
+            $response = $client
+                ->query("/ppp/secret/add", [
+                    "name" => $data["name"],
+                    "password" => $data["password"],
+                    "service" => $data["service"] ?? "any",
+                    "profile" => $data["profile"] ?? "default",
+                    "comment" => $data["comment"] ?? "",
+                ])
+                ->read();
+
+            $this->clearCache($router->id);
+            Cache::forget($breakerKey);
+
+            return $response;
+        } catch (\Throwable $e) {
+            Cache::put(
+                $breakerKey,
+                true,
+                now()->addMinutes(self::CIRCUIT_BREAKER_DURATION),
+            );
+
+            Log::error("Failed to create PPP secret on router {$router->id}", [
+                "router_id" => $router->id,
+                "name" => $data["name"] ?? "unknown",
+                "error" => $e->getMessage(),
+            ]);
+
+            throw $e;
+        }
+    }
+
     public function updatePPPSecret(
         Router $router,
         PppSecret $secret,
         array $data,
     ): bool {
-        // Handle local environment mock
-        if (config("app.env") === "local" && empty($router->host)) {
-            Log::info("Mock Update PPP Secret: {$secret->name}");
-            return true;
-        }
+        $breakerKey = "router.{$router->id}.unreachable";
 
         try {
             $client = $this->getClient($router);
-
-            // Construct the query using the Query builder
             $query = new Query("/ppp/secret/set");
 
-            // MikroTik needs a way to find the record. We use the 'name'.
-            $query->equal(".id", $secret->name);
+            $query->equal(".id", $secret->mikrotik_id ?? $secret->name);
 
             if (isset($data["name"])) {
                 $query->equal("name", $data["name"]);
@@ -49,320 +260,159 @@ class MikrotikService
             if (isset($data["comment"])) {
                 $query->equal("comment", $data["comment"]);
             }
-
-            // Handle the 'disabled' field (MikroTik uses 'yes' for disabled)
             if (isset($data["is_active"])) {
                 $query->equal("disabled", $data["is_active"] ? "no" : "yes");
             }
 
             $client->query($query)->read();
 
-            // Clear cache so the next fetch shows the updated data
-            Cache::forget("router.{$router->id}.ppp-secrets");
-            Cache::forget("ppp_stats_{$router->id}");
+            $this->clearCache($router->id);
+            Cache::forget($breakerKey);
 
             return true;
         } catch (\Throwable $e) {
-            Log::error(
-                "Mikrotik Update Error [{$router->host}]: " . $e->getMessage(),
+            Cache::put(
+                $breakerKey,
+                true,
+                now()->addMinutes(self::CIRCUIT_BREAKER_DURATION),
             );
+
+            Log::error("Failed to update PPP secret on router {$router->id}", [
+                "router_id" => $router->id,
+                "secret_id" => $secret->id,
+                "error" => $e->getMessage(),
+            ]);
+
             throw $e;
         }
     }
-    /**
-     * Removes a PPP Secret from the MikroTik hardware.
-     */
+
     public function deletePPPSecret(Router $router, PppSecret $secret): bool
     {
-        if (config("app.env") === "local" && empty($router->host)) {
-            return true;
-        }
+        $breakerKey = "router.{$router->id}.unreachable";
 
         try {
             $client = $this->getClient($router);
-            // MikroTik removes by name or internal .id
-            $query = new Query("/ppp/secret/remove")->equal(
-                ".id",
-                $secret->name,
-            );
+            $query = new Query("/ppp/secret/remove");
+            $query->equal(".id", $secret->mikrotik_id ?? $secret->name);
+
             $client->query($query)->read();
+
+            $this->clearCache($router->id);
+            Cache::forget($breakerKey);
 
             return true;
         } catch (\Throwable $e) {
-            Log::error("MikroTik Delete Error: " . $e->getMessage());
+            Cache::put(
+                $breakerKey,
+                true,
+                now()->addMinutes(self::CIRCUIT_BREAKER_DURATION),
+            );
+
+            Log::error("Failed to delete PPP secret on router {$router->id}", [
+                "router_id" => $router->id,
+                "secret_id" => $secret->id,
+                "error" => $e->getMessage(),
+            ]);
+
             throw $e;
         }
     }
-    /**
-     * Fetches the MikroTik configuration export.
-     */
-    public function getExport(Router $router): string
-    {
-        if (config("app.env") === "local" && empty($router->host)) {
-            return $this->getMockData("export_string");
-        }
 
+    public function testConnection(Router $router): bool
+    {
         try {
             $client = $this->getClient($router);
-
-            $output = "# Generated by Gemini Infrastructure Manager\n";
-            $output .= "# Router: " . $router->name . "\n";
-            $output .= "# Date: " . now()->toDateTimeString() . "\n";
-            $output .= "# Note: This is an API-generated partial export.\n\n";
-
-            // 1. System Identity
-            $identity = $client
-                ->query(new Query("/system/identity/print"))
-                ->read();
-            $output .=
-                "/system identity set name=" .
-                ($identity[0]["name"] ?? "MikroTik") .
-                "\n\n";
-
-            // 2. Interfaces
-            $output .= "/interface\n";
-            $interfaces = $client->query(new Query("/interface/print"))->read();
-            foreach ($interfaces as $iface) {
-                if (isset($iface["comment"])) {
-                    $output .=
-                        "set [ find name=" .
-                        $iface["name"] .
-                        " ] comment=\"" .
-                        $iface["comment"] .
-                        "\"\n";
-                }
-            }
-
-            // 3. IP Addresses
-            $output .= "\n/ip address\n";
-            $addresses = $client->query(new Query("/ip/address/print"))->read();
-            foreach ($addresses as $addr) {
-                if (($addr["dynamic"] ?? "false") === "false") {
-                    $output .=
-                        "add address=" .
-                        $addr["address"] .
-                        " interface=" .
-                        $addr["interface"] .
-                        " network=" .
-                        $addr["network"] .
-                        "\n";
-                }
-            }
-
-            return $output;
+            $client->query("/system/identity/print")->read();
+            Cache::forget("router.{$router->id}.unreachable");
+            return true;
         } catch (\Throwable $e) {
-            Log::error(
-                "Mikrotik Export Error [{$router->host}]: " . $e->getMessage(),
+            Log::debug(
+                "Connection test failed for router {$router->id}: {$e->getMessage()}",
             );
-            throw new \Exception(
-                "Could not connect to router API to generate export.",
-            );
+            return false;
         }
     }
 
-    /**
-     * Optimized method to fetch PPP Secrets
-     */
-    public function getPPPSecrets(Router $router): array
+    public function getSystemResources(Router $router): array
     {
-        return $this->getCachedData($router, "ppp-secrets", 10) ?? [];
-    }
-
-    public function getCachedData(
-        Router $router,
-        string $type,
-        int $seconds = 5,
-    ): ?array {
-        $cacheKey = "router.{$router->id}.{$type}";
-
-        return Cache::remember($cacheKey, $seconds, function () use (
+        return $this->getCachedData(
             $router,
-            $type,
-        ) {
-            if (config("app.env") === "local" && empty($router->host)) {
-                return $this->getMockData($type);
-            }
-
-            try {
-                $client = $this->getClient($router);
-
-                return match ($type) {
-                    "resources" => $client
-                        ->query(new Query("/system/resource/print"))
-                        ->read()[0] ?? [],
-                    "interfaces" => $client
-                        ->query(new Query("/interface/print"))
-                        ->read() ?? [],
-                    "ppp-secrets" => $client
-                        ->query(new Query("/ppp/secret/print"))
-                        ->read() ?? [],
-                    "logs" => array_reverse(
-                        $client->query(new Query("/log/print"))->read() ?? [],
-                    ),
-                    default => null,
-                };
-            } catch (\Throwable $e) {
-                Log::error(
-                    "Mikrotik Service Error [{$router->host}] Type [{$type}]: " .
-                        $e->getMessage(),
-                );
-                return null;
-            }
-        });
+            "resources",
+            self::CACHE_TTL_RESOURCES,
+        ) ?? [];
     }
 
-    public function setInterfaceStatus(
-        Router $router,
-        string $interfaceId,
-        bool $shouldDisable,
-    ): bool {
-        if (config("app.env") === "local") {
-            return true;
-        }
+    public function getInterfaces(Router $router): array
+    {
+        return $this->getCachedData(
+            $router,
+            "interfaces",
+            self::CACHE_TTL_INTERFACES,
+        ) ?? [];
+    }
 
+    public function getPPPActive(Router $router): array
+    {
         try {
             $client = $this->getClient($router);
-            $client
-                ->query(
-                    new Query("/interface/set")
-                        ->equal(".id", $interfaceId)
-                        ->equal("disabled", $shouldDisable ? "yes" : "no"),
-                )
-                ->read();
-
-            Cache::forget("router.{$router->id}.interfaces");
-            return true;
+            return $client->query("/ppp/active/print")->read() ?? [];
         } catch (\Throwable $e) {
-            return false;
-        }
-    }
-
-    public function reboot(Router $router): bool
-    {
-        if (config("app.env") === "local") {
-            return true;
-        }
-        try {
-            $this->getClient($router)
-                ->query(new Query("/system/reboot"))
-                ->read();
-            return true;
-        } catch (\Throwable $e) {
-            return false;
+            Log::warning(
+                "Failed to get PPP active list for router {$router->id}: {$e->getMessage()}",
+            );
+            return [];
         }
     }
 
     private function getClient(Router $router): Client
     {
-        return new Client([
-            "host" => $router->hostname ?? $router->host,
-            "user" => $router->api_username,
-            "pass" => $router->api_password,
-            "port" => (int) $router->api_port,
-            "timeout" => 5,
-        ]);
-    }
-
-    private function getMockData(string $type)
-    {
-        return match ($type) {
-            "export_string"
-                => "# Mock Export\n/system identity set name=Mock-Router",
-            "resources" => [
-                "uptime" => "14d 02:34:11",
-                "cpu-load" => rand(8, 15),
-                "total-memory" => 4294967296,
-                "free-memory" => 2362232012,
-                "cpu-count" => 4,
-            ],
-            "interfaces" => [
-                [
-                    ".id" => "*1",
-                    "name" => "ether1",
-                    "running" => "true",
-                    "disabled" => "false",
-                    "type" => "ether",
-                ],
-            ],
-            "ppp-secrets" => [
-                [
-                    ".id" => "*1",
-                    "name" => "gemini_user",
-                    "password" => "secret123",
-                    "service" => "pppoe",
-                    "profile" => "10M_Profile",
-                    "last-logged-out" => "jan/24/2026 12:00:00",
-                    "disabled" => "false",
-                    "comment" => "Primary Uplink",
-                ],
-                [
-                    ".id" => "*2",
-                    "name" => "test_customer",
-                    "password" => "pass456",
-                    "service" => "pptp",
-                    "profile" => "default",
-                    "last-logged-out" => "never",
-                    "disabled" => "true",
-                    "comment" => "Suspended Account",
-                ],
-            ],
-            "logs" => [
-                [
-                    "time" => "jan/23 19:30:01",
-                    "topics" => "system,info",
-                    "message" => "interface enabled",
-                ],
-            ],
-            default => [],
-        };
-    }
-
-    public function getInterfaceTraffic(
-        Router $router,
-        string $interface,
-    ): array {
-        if (config("app.env") === "local") {
-            return [
-                "rx" => rand(500000, 2000000),
-                "tx" => rand(100000, 500000),
-            ];
-        }
-
         try {
-            $client = $this->getClient($router);
-            $result = $client
-                ->query(
-                    new \RouterOS\Query("/interface/monitor-traffic")
-                        ->equal("interface", $interface)
-                        ->equal("once", ""),
-                )
-                ->read();
-
-            return [
-                "rx" => $result[0]["rx-bits-per-second"] ?? 0,
-                "tx" => $result[0]["tx-bits-per-second"] ?? 0,
+            $config = [
+                "host" => $router->hostname ?? $router->host,
+                "user" => $router->api_username,
+                "pass" => $router->api_password,
+                "port" => (int) $router->api_port,
+                "timeout" => self::CONNECTION_TIMEOUT,
             ];
+
+            $client = new Client($config);
+
+            if (method_exists($client, "setTimeout")) {
+                $client->setTimeout(self::READ_TIMEOUT);
+            }
+
+            return $client;
         } catch (\Throwable $e) {
-            return ["rx" => 0, "tx" => 0];
+            throw new \Exception(
+                "Failed to connect to router: " . $e->getMessage(),
+            );
         }
     }
 
-    public function connect($host, $user, $pass, $port): bool
+    private function clearCache(int $routerId): void
     {
-        if (config("app.env") === "local" && empty($host)) {
-            return true;
+        $keys = [
+            "router.{$routerId}.ppp-secrets",
+            "router.{$routerId}.active_list",
+            "router.{$routerId}.online_count",
+            "router.{$routerId}.resources",
+            "router.{$routerId}.interfaces",
+        ];
+
+        foreach ($keys as $key) {
+            Cache::forget($key);
         }
-        try {
-            new Client([
-                "host" => $host,
-                "user" => $user,
-                "pass" => $pass,
-                "port" => (int) $port,
-                "timeout" => 3,
-            ]);
-            return true;
-        } catch (\Throwable $e) {
-            return false;
-        }
+    }
+
+    public function clearCircuitBreaker(int $routerId): void
+    {
+        Cache::forget("router.{$routerId}.unreachable");
+        Log::info("Circuit breaker manually cleared for router {$routerId}");
+    }
+
+    public function isCircuitBreakerActive(int $routerId): bool
+    {
+        return Cache::has("router.{$routerId}.unreachable");
     }
 }

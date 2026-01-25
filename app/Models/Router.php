@@ -4,6 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use App\Models\PppSecret;
+
 class Router extends Model
 {
     protected $fillable = [
@@ -30,8 +33,14 @@ class Router extends Model
         "radius_coa_port" => "integer",
         "is_online" => "boolean",
     ];
+
     public function site(): BelongsTo
     {
         return $this->belongsTo(Site::class);
+    }
+
+    public function pppSecrets(): HasMany
+    {
+        return $this->hasMany(PppSecret::class);
     }
 }

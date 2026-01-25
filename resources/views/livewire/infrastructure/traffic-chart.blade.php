@@ -1,4 +1,4 @@
-<div wire:poll.3s="fetchStats" class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-2xl">
+<div class="bg-zinc-900 border border-zinc-800 rounded-xl p-6 shadow-2xl">
     <div class="flex items-center justify-between mb-6">
         <div>
             <h3 class="text-sm font-bold text-zinc-200 uppercase tracking-widest">Live Throughput</h3>
